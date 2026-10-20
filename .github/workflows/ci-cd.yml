@@ -1,0 +1,72 @@
+# CI/CD pipeline
+#   CI: on every push / pull request -> install dependencies, lint, run unit tests
+#   CD: only on a push to master AND only if CI passed -> deploy to Render (staging)
+#       and then check that the new version is live.
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build & Test (CI)
+    runs-on: ubuntu-latest
+    container: python:3.8-slim          # the app targets Python 3.8
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Lint (syntax errors / undefined names)
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run unit tests
+        run: python -m unittest discover -v
+
+  deploy:
+    name: Deploy to Staging (CD)
+    needs: test                          # runs ONLY if the test job succeeded
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: staging                 # shows up under "Deployments" on GitHub
+    steps:
+      - name: Trigger Render deploy
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::error::RENDER_DEPLOY_HOOK_URL secret is not set"
+            exit 1
+          fi
+          curl -fsS -X POST "$DEPLOY_HOOK"
+          echo
+          echo "Deploy triggered for commit ${GITHUB_SHA}"
+
+      - name: Wait for the new version to go live
+        env:
+          APP_URL: ${{ secrets.RENDER_APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "RENDER_APP_URL secret not set - skipping live check."
+            exit 0
+          fi
+          echo "Checking ${APP_URL}/health (up to 15 minutes)..."
+          for i in $(seq 1 45); do
+            BODY=$(curl -fsS --max-time 30 "${APP_URL}/health" || true)
+            echo "Attempt $i: ${BODY:-no response yet}"
+            if echo "$BODY" | grep -q "\"commit\": *\"${GITHUB_SHA}\""; then
+              echo "Commit ${GITHUB_SHA} is live on staging."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::New version did not appear on staging in time"
+          exit 1

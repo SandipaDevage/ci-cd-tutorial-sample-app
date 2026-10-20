@@ -1,11 +1,32 @@
+import os
+
 from flask import json, jsonify
 from app import app
 from app import db
 from app.models import Menu
 
+APP_VERSION = "1.1.0"
+
 @app.route('/')
 def home():
-	return jsonify({ "status": "ok" })
+    return jsonify({ "status": "ok" })
+
+@app.route('/health')
+def health():
+    """Health check used to confirm the deployed app is up and connected to its database."""
+    try:
+        db.session.execute('SELECT 1')
+        database = "connected"
+    except Exception:
+        database = "unavailable"
+    return jsonify({
+        "status": "healthy",
+        "version": APP_VERSION,
+        # Render sets RENDER_GIT_COMMIT on deployed services; the CD job uses it
+        # to confirm that the commit it just tested is the one now running.
+        "commit": os.environ.get("RENDER_GIT_COMMIT", "local"),
+        "database": database
+    })
 
 @app.route('/menu')
 def menu():
