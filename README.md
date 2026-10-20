@@ -5,8 +5,8 @@
 ![CI/CD Pipeline](../../actions/workflows/ci-cd.yml/badge.svg)
 
 - **CI (GitHub Actions):** every push and pull request installs the dependencies, lints the code and runs the unit tests (`.github/workflows/ci-cd.yml`).
-- **CD (Hugging Face Spaces):** when a push to `master` passes CI, the pipeline uploads the app to a Docker Space on Hugging Face (the staging environment). The Space rebuilds the Docker image and serves it at a public URL. The pipeline then polls `/health` until the tested commit is live. If the tests fail, the deploy job is skipped.
-- **Staging URL:** `https://<hf-username>-ci-cd-sample-app.hf.space` (printed in the deploy job's log)
+- **CD (Vercel):** when a push to `master` passes CI, the pipeline deploys the app to Vercel (the staging environment) with the Vercel CLI. `index.py` is the entrypoint Vercel serves. The pipeline then calls `/health` on the public staging URL to confirm the tested commit is live. If the tests fail, the deploy job is skipped.
+- **Staging URL:** printed in the deploy job's log and run summary.
 - **Endpoints:** `/` (status), `/health` (version, deployed commit, database status), `/menu` (today's special).
 
 

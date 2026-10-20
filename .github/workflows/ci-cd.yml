@@ -1,7 +1,7 @@
 # CI/CD pipeline
 #   CI: on every push / pull request -> install dependencies, lint, run unit tests
-#   CD: only on a push to master AND only if CI passed -> deploy to a Hugging Face
-#       Docker Space (staging) and then check that the new version is live.
+#   CD: only on a push to master AND only if CI passed -> deploy to Vercel
+#       (staging) and then check that the new version is live.
 name: CI/CD Pipeline
 
 on:
@@ -9,9 +9,6 @@ on:
     branches: [ "**" ]
   pull_request:
   workflow_dispatch:
-
-env:
-  SPACE_NAME: ci-cd-sample-app          # the Space is created automatically on first deploy
 
 jobs:
   test:
@@ -44,68 +41,51 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Install the Vercel CLI
+        run: npm install --global vercel@latest
 
-      - name: Prepare the Space files
-        run: |
-          mkdir -p /tmp/space
-          git archive HEAD | tar -x -C /tmp/space   # tracked files only
-          rm -rf /tmp/space/.github
-          # Hugging Face reads the Space settings from the README front matter.
-          {
-            printf -- '---\ntitle: CI CD Sample App\nemoji: "🚀"\ncolorFrom: blue\ncolorTo: green\n'
-            printf -- 'sdk: docker\napp_port: 8000\npinned: false\n---\n\n'
-            cat README.md
-          } > /tmp/space/README.md
-          # Bake the tested commit into the image so /health can report it.
-          echo "ENV GIT_COMMIT=${GITHUB_SHA}" >> /tmp/space/Dockerfile
-
-      - name: Upload to Hugging Face Space
+      - name: Deploy to Vercel (staging)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          if [ -z "$HF_TOKEN" ]; then
-            echo "::error::HF_TOKEN secret is not set"
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::error::VERCEL_TOKEN secret is not set"
             exit 1
           fi
-          pip install --quiet "huggingface_hub>=0.25"
-          python - <<'EOF'
-          import os
-          from huggingface_hub import HfApi
+          # Creates/links the Vercel project on the first run, uploads the code,
+          # waits for the build, and prints the deployment URL on stdout.
+          # GIT_COMMIT is passed to the app so /health can report the tested commit.
+          DEPLOY_URL=$(vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
+                         --env GIT_COMMIT="$GITHUB_SHA")
+          echo "Deployment: $DEPLOY_URL"
 
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          owner = api.whoami()["name"]
-          repo_id = f"{owner}/{os.environ['SPACE_NAME']}"
-          api.create_repo(repo_id, repo_type="space", space_sdk="docker", exist_ok=True)
-          api.upload_folder(
-              folder_path="/tmp/space",
-              repo_id=repo_id,
-              repo_type="space",
-              commit_message=f"Deploy {os.environ['GITHUB_SHA']}",
-          )
-          url = f"https://{owner.lower()}-{os.environ['SPACE_NAME']}.hf.space"
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"APP_URL={url}\n")
-          print(f"Uploaded commit {os.environ['GITHUB_SHA']} to https://huggingface.co/spaces/{repo_id}")
-          print(f"Staging URL: {url}")
-          EOF
+          # Look up the public production domain (the shortest alias) of this deployment.
+          ORG_ID=$(jq -r .orgId .vercel/project.json)
+          TEAM_QS=""
+          case "$ORG_ID" in team_*) TEAM_QS="?teamId=$ORG_ID" ;; esac
+          ALIAS=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" \
+                    "https://api.vercel.com/v13/deployments/${DEPLOY_URL#https://}${TEAM_QS}" \
+                  | jq -r '[.alias[]?] | sort_by(length) | .[0] // empty')
+          APP_URL="https://${ALIAS:-${DEPLOY_URL#https://}}"
+          echo "APP_URL=$APP_URL" >> "$GITHUB_ENV"
+          echo "Staging URL: $APP_URL"
 
-      - name: Wait for the new version to go live
+      - name: Check the new version is live
         run: |
-          echo "Checking ${APP_URL}/health (up to 15 minutes)..."
-          for i in $(seq 1 45); do
+          echo "Checking ${APP_URL}/health ..."
+          for i in $(seq 1 20); do
             BODY=$(curl -fsS --max-time 30 "${APP_URL}/health" || true)
-            echo "Attempt $i: ${BODY:-still building...}"
+            echo "Attempt $i: ${BODY:-no response yet}"
             if echo "$BODY" | grep -q "\"commit\": *\"${GITHUB_SHA}\""; then
               echo "Commit ${GITHUB_SHA} is live on staging: ${APP_URL}"
-              echo "### Deployed to staging :rocket:" >> "$GITHUB_STEP_SUMMARY"
-              echo "${APP_URL}" >> "$GITHUB_STEP_SUMMARY"
+              {
+                echo "### Deployed to staging :rocket:"
+                echo "- URL: ${APP_URL}"
+                echo "- Commit: ${GITHUB_SHA}"
+              } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            sleep 20
+            sleep 15
           done
           echo "::error::New version did not appear on staging in time"
           exit 1
