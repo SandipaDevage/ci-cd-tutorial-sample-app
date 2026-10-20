@@ -32,7 +32,7 @@ class BasicTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, 'application/json')
         body = json.loads(response.data)
-        self.assertEqual(body['status'], 'ok')
+        self.assertEqual(body['status'], 'broken')  # deliberately wrong to demo a failing CI run
 
     def test_health(self):
         response = self.app.get('/health', follow_redirects=True)
