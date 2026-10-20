@@ -22,9 +22,9 @@ def health():
     return jsonify({
         "status": "healthy",
         "version": APP_VERSION,
-        # Render sets RENDER_GIT_COMMIT on deployed services; the CD job uses it
+        # The CD job bakes GIT_COMMIT into the deployed image and checks this value
         # to confirm that the commit it just tested is the one now running.
-        "commit": os.environ.get("RENDER_GIT_COMMIT", "local"),
+        "commit": os.environ.get("GIT_COMMIT", "local"),
         "database": database
     })
 

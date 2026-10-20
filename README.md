@@ -5,7 +5,8 @@
 ![CI/CD Pipeline](../../actions/workflows/ci-cd.yml/badge.svg)
 
 - **CI (GitHub Actions):** every push and pull request installs the dependencies, lints the code and runs the unit tests (`.github/workflows/ci-cd.yml`).
-- **CD (Render):** when a push to `master` passes CI, the pipeline calls a Render deploy hook. Render rebuilds the Docker image and deploys it to the staging URL. The pipeline then polls `/health` until the tested commit is live. If the tests fail, the deploy job is skipped.
+- **CD (Hugging Face Spaces):** when a push to `master` passes CI, the pipeline uploads the app to a Docker Space on Hugging Face (the staging environment). The Space rebuilds the Docker image and serves it at a public URL. The pipeline then polls `/health` until the tested commit is live. If the tests fail, the deploy job is skipped.
+- **Staging URL:** `https://<hf-username>-ci-cd-sample-app.hf.space` (printed in the deploy job's log)
 - **Endpoints:** `/` (status), `/health` (version, deployed commit, database status), `/menu` (today's special).
 
 

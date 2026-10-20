@@ -1,7 +1,7 @@
 # CI/CD pipeline
 #   CI: on every push / pull request -> install dependencies, lint, run unit tests
-#   CD: only on a push to master AND only if CI passed -> deploy to Render (staging)
-#       and then check that the new version is live.
+#   CD: only on a push to master AND only if CI passed -> deploy to a Hugging Face
+#       Docker Space (staging) and then check that the new version is live.
 name: CI/CD Pipeline
 
 on:
@@ -9,6 +9,9 @@ on:
     branches: [ "**" ]
   pull_request:
   workflow_dispatch:
+
+env:
+  SPACE_NAME: ci-cd-sample-app          # the Space is created automatically on first deploy
 
 jobs:
   test:
@@ -38,32 +41,68 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging                 # shows up under "Deployments" on GitHub
     steps:
-      - name: Trigger Render deploy
-        env:
-          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare the Space files
         run: |
-          if [ -z "$DEPLOY_HOOK" ]; then
-            echo "::error::RENDER_DEPLOY_HOOK_URL secret is not set"
+          mkdir -p /tmp/space
+          git archive HEAD | tar -x -C /tmp/space   # tracked files only
+          rm -rf /tmp/space/.github
+          # Hugging Face reads the Space settings from the README front matter.
+          {
+            printf -- '---\ntitle: CI CD Sample App\nemoji: "🚀"\ncolorFrom: blue\ncolorTo: green\n'
+            printf -- 'sdk: docker\napp_port: 8000\npinned: false\n---\n\n'
+            cat README.md
+          } > /tmp/space/README.md
+          # Bake the tested commit into the image so /health can report it.
+          echo "ENV GIT_COMMIT=${GITHUB_SHA}" >> /tmp/space/Dockerfile
+
+      - name: Upload to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set"
             exit 1
           fi
-          curl -fsS -X POST "$DEPLOY_HOOK"
-          echo
-          echo "Deploy triggered for commit ${GITHUB_SHA}"
+          pip install --quiet "huggingface_hub>=0.25"
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          owner = api.whoami()["name"]
+          repo_id = f"{owner}/{os.environ['SPACE_NAME']}"
+          api.create_repo(repo_id, repo_type="space", space_sdk="docker", exist_ok=True)
+          api.upload_folder(
+              folder_path="/tmp/space",
+              repo_id=repo_id,
+              repo_type="space",
+              commit_message=f"Deploy {os.environ['GITHUB_SHA']}",
+          )
+          url = f"https://{owner.lower()}-{os.environ['SPACE_NAME']}.hf.space"
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"APP_URL={url}\n")
+          print(f"Uploaded commit {os.environ['GITHUB_SHA']} to https://huggingface.co/spaces/{repo_id}")
+          print(f"Staging URL: {url}")
+          EOF
 
       - name: Wait for the new version to go live
-        env:
-          APP_URL: ${{ secrets.RENDER_APP_URL }}
         run: |
-          if [ -z "$APP_URL" ]; then
-            echo "RENDER_APP_URL secret not set - skipping live check."
-            exit 0
-          fi
           echo "Checking ${APP_URL}/health (up to 15 minutes)..."
           for i in $(seq 1 45); do
             BODY=$(curl -fsS --max-time 30 "${APP_URL}/health" || true)
-            echo "Attempt $i: ${BODY:-no response yet}"
+            echo "Attempt $i: ${BODY:-still building...}"
             if echo "$BODY" | grep -q "\"commit\": *\"${GITHUB_SHA}\""; then
-              echo "Commit ${GITHUB_SHA} is live on staging."
+              echo "Commit ${GITHUB_SHA} is live on staging: ${APP_URL}"
+              echo "### Deployed to staging :rocket:" >> "$GITHUB_STEP_SUMMARY"
+              echo "${APP_URL}" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep 20
